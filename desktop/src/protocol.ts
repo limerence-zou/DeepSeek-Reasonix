@@ -121,6 +121,8 @@ export type MentionPreviewEvent = {
 export type TabOpenedEvent = {
   type: "$tab_opened";
   workspaceDir: string;
+  /** True when the frontend should focus this tab (user-opened, or the restored focused tab). */
+  active?: boolean;
 };
 
 export type TabClosedEvent = {
@@ -454,6 +456,7 @@ export type OutgoingCommand = { tabId?: string } & (
   | { cmd: "mention_picked"; path: string }
   | { cmd: "tab_open"; workspaceDir?: string }
   | { cmd: "tab_close" }
+  | { cmd: "tab_activate"; tabId: string }
   | { cmd: "mcp_specs_get" }
   | { cmd: "mcp_specs_add"; spec: string }
   | { cmd: "mcp_specs_remove"; spec: string }

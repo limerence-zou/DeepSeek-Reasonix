@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  type DesktopOpenTab,
   addProjectPathAllowed,
   addProjectShellAllowed,
   clearProjectPathAllowed,
@@ -547,31 +548,44 @@ describe("config", () => {
     ).toThrow(/JSON object/);
   });
 
-  describe("desktopOpenTabs — issue #933", () => {
+  describe("desktopOpenTabs — issues #933, #1244", () => {
     it("returns [] when unset", () => {
       expect(loadDesktopOpenTabs(path)).toEqual([]);
     });
 
-    it("round-trips an ordered list", () => {
-      saveDesktopOpenTabs(["/a", "/b", "/c"], path);
-      expect(loadDesktopOpenTabs(path)).toEqual(["/a", "/b", "/c"]);
+    it("round-trips dir + session + active", () => {
+      saveDesktopOpenTabs([{ dir: "/a", session: "s-a", active: true }, { dir: "/b" }], path);
+      expect(loadDesktopOpenTabs(path)).toEqual([
+        { dir: "/a", session: "s-a", active: true },
+        { dir: "/b" },
+      ]);
     });
 
-    it("filters out empty / non-string entries on read", () => {
-      writeConfig({ desktopOpenTabs: ["/a", "", null as unknown as string, "/b"] }, path);
-      expect(loadDesktopOpenTabs(path)).toEqual(["/a", "/b"]);
+    it("reads the legacy bare-string format", () => {
+      writeConfig({ desktopOpenTabs: ["/a", "/b"] as unknown as DesktopOpenTab[] }, path);
+      expect(loadDesktopOpenTabs(path)).toEqual([{ dir: "/a" }, { dir: "/b" }]);
+    });
+
+    it("filters out empty / malformed entries on read", () => {
+      writeConfig(
+        {
+          desktopOpenTabs: [{ dir: "/a" }, { dir: "" }, null, "/b"] as unknown as DesktopOpenTab[],
+        },
+        path,
+      );
+      expect(loadDesktopOpenTabs(path)).toEqual([{ dir: "/a" }, { dir: "/b" }]);
     });
 
     it("clears the key when saving an empty list", () => {
-      saveDesktopOpenTabs(["/a"], path);
+      saveDesktopOpenTabs([{ dir: "/a" }], path);
       saveDesktopOpenTabs([], path);
       expect(readConfig(path).desktopOpenTabs).toBeUndefined();
     });
 
     it("preserves order across multiple saves (tab reordering)", () => {
-      saveDesktopOpenTabs(["/a", "/b", "/c"], path);
-      saveDesktopOpenTabs(["/c", "/a", "/b"], path);
-      expect(loadDesktopOpenTabs(path)).toEqual(["/c", "/a", "/b"]);
+      saveDesktopOpenTabs([{ dir: "/a" }, { dir: "/b" }, { dir: "/c" }], path);
+      saveDesktopOpenTabs([{ dir: "/c" }, { dir: "/a" }, { dir: "/b" }], path);
+      expect(loadDesktopOpenTabs(path)).toEqual([{ dir: "/c" }, { dir: "/a" }, { dir: "/b" }]);
     });
   });
 });

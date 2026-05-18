@@ -15,6 +15,7 @@ import { pickPrimaryBalance } from "../../client.js";
 import { codeSystemPrompt } from "../../code/prompt.js";
 import { buildCodeToolset } from "../../code/setup.js";
 import {
+  type DesktopOpenTab,
   type EditMode,
   isPlausibleKey,
   loadApiKey,
@@ -122,6 +123,7 @@ type InMessage = { tabId?: string } & (
   | { cmd: "mention_picked"; path: string }
   | { cmd: "tab_open"; workspaceDir?: string }
   | { cmd: "tab_close" }
+  | { cmd: "tab_activate"; tabId: string }
   | { cmd: "mcp_specs_get" }
   | { cmd: "mcp_specs_add"; spec: string }
   | { cmd: "mcp_specs_remove"; spec: string }
@@ -205,6 +207,8 @@ interface MentionPreviewEvent {
 interface TabOpenedEvent {
   type: "$tab_opened";
   workspaceDir: string;
+  /** True when the frontend should focus this tab (user-opened, or the restored focused tab). */
+  active?: boolean;
 }
 
 interface TabClosedEvent {
@@ -815,6 +819,8 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
 
   const tabs = new Map<string, Tab>();
   const tabContext = new AsyncLocalStorage<string>();
+  // Frontend-reported focused tab — persisted so a restart reopens on it (#1244).
+  let lastActiveTabId = "";
 
   function activeRunningTab(): Tab | undefined {
     const id = tabContext.getStore();
@@ -928,10 +934,16 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       });
   }
 
-  /** Snapshot of every open tab's workspace dir, in tab order. Persisted after open/close so a restart restores the full tab set (issue #933). */
+  /** Snapshot of every open tab — workspace dir, loaded session and focus, in tab order. Persisted after open/close/switch so a restart restores the full tab set and each conversation (issues #933, #1244). */
   function persistOpenTabs(): void {
     try {
-      saveDesktopOpenTabs(Array.from(tabs.values()).map((t) => t.rootDir));
+      saveDesktopOpenTabs(
+        Array.from(tabs.values()).map((t) => ({
+          dir: t.rootDir,
+          session: t.currentSession || undefined,
+          active: t.id === lastActiveTabId,
+        })),
+      );
     } catch {
       // best-effort — disk / perms shouldn't break tab management
     }
@@ -1045,6 +1057,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     emitSessions(tab);
     emitSettings(tab);
     emitSkills(tab);
+    persistOpenTabs();
   }
 
   function forgetGate(id: number): Tab | undefined {
@@ -1325,15 +1338,49 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
   // `$ready` when it completes — until then `state.ready` keeps the
   // composer disabled, so users can't send a message before the runtime
   // exists. emitBalance was already fire-and-forget.
-  function bootstrapTab(initialDir?: string): Tab {
+  function bootstrapTab(
+    initialDir?: string,
+    restore?: { session?: string; active?: boolean },
+  ): Tab {
     const tab = createTabSkeleton(initialDir);
-    emit({ type: "$tab_opened", workspaceDir: tab.rootDir }, tab.id);
+    // Reopen the conversation the tab had, if its jsonl is still readable.
+    let restoredMessages: LoadedMessage[] | undefined;
+    if (restore?.session) {
+      try {
+        if (existsSync(sessionPath(restore.session))) {
+          const msgs = buildLoadedMessages(loadSessionMessages(restore.session));
+          if (msgs.length > 0) {
+            tab.currentSession = restore.session;
+            restoredMessages = msgs;
+          }
+        }
+      } catch {
+        // unreadable jsonl — fall back to the freshly minted session
+      }
+    }
+    emit({ type: "$tab_opened", workspaceDir: tab.rootDir, active: restore?.active }, tab.id);
     emitSessions(tab);
     emitSettings(tab);
     emitMcpSpecs(tab);
     emitSkills(tab);
     emitMemory(tab);
     emitQQSettings(tab);
+    if (restoredMessages) {
+      const meta = loadSessionMeta(tab.currentSession);
+      emit(
+        {
+          type: "$session_loaded",
+          name: tab.currentSession,
+          messages: restoredMessages,
+          carryover: {
+            totalCostUsd: meta.totalCostUsd ?? 0,
+            cacheHitTokens: meta.cacheHitTokens ?? 0,
+            cacheMissTokens: meta.cacheMissTokens ?? 0,
+          },
+        },
+        tab.id,
+      );
+    }
     if (!loadApiKey()) emit({ type: "$needs_setup", reason: "no_api_key" }, tab.id);
     void emitBalance(tab);
     void initTabToolset(tab)
@@ -1347,24 +1394,25 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
     return tab;
   }
 
-  // Restore the full tab set from the previous session (issue #933).
-  // `--dir` overrides saved tabs so a CLI-supplied workspace stays
-  // authoritative. Missing dirs are silently skipped — a deleted
-  // workspace shouldn't block boot.
-  const savedTabDirs = opts.dir
+  // Restore the full tab set from the previous session — workspace dir,
+  // loaded session and focused tab (issues #933, #1244). `--dir` overrides
+  // saved tabs so a CLI-supplied workspace stays authoritative. Missing
+  // dirs are silently skipped — a deleted workspace shouldn't block boot.
+  const savedTabs = opts.dir
     ? []
-    : loadDesktopOpenTabs().filter((d) => {
+    : loadDesktopOpenTabs().filter((t) => {
         try {
-          return existsSync(d) && statSync(d).isDirectory();
+          return existsSync(t.dir) && statSync(t.dir).isDirectory();
         } catch {
           return false;
         }
       });
-  first = bootstrapTab(savedTabDirs[0]);
-  for (const d of savedTabDirs.slice(1)) {
-    if (resolve(d) === first.rootDir) continue;
-    bootstrapTab(d);
-  }
+  first = bootstrapTab(savedTabs[0]?.dir, savedTabs[0]);
+  const restored: Tab[] = [first];
+  for (const t of savedTabs.slice(1)) restored.push(bootstrapTab(t.dir, t));
+  // Mirror the persisted focus so the next persist round-trips it.
+  const activeIdx = savedTabs.findIndex((t) => t.active);
+  lastActiveTabId = ((activeIdx >= 0 ? restored[activeIdx] : first) ?? first).id;
   persistOpenTabs();
 
   const rl = createInterface({ input: stdin });
@@ -1381,10 +1429,19 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
 
     if (msg.cmd === "tab_open") {
       try {
-        bootstrapTab(msg.workspaceDir);
+        // A user-opened tab takes focus.
+        const opened = bootstrapTab(msg.workspaceDir, { active: true });
+        lastActiveTabId = opened.id;
         persistOpenTabs();
       } catch (err) {
         emit({ type: "$error", message: `tab_open failed: ${(err as Error).message}` });
+      }
+      return;
+    }
+    if (msg.cmd === "tab_activate") {
+      if (tabs.has(msg.tabId)) {
+        lastActiveTabId = msg.tabId;
+        persistOpenTabs();
       }
       return;
     }
@@ -1582,6 +1639,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
         abortTurn(tab);
         cancelPendingGates(tab);
         tab.currentSession = msg.name;
+        persistOpenTabs();
         if (tab.runtime) tab.runtime = buildRuntimeFor(tab);
         const loadedMessages = buildLoadedMessages(records);
         // Empty load is a known silent-failure path (file 0 bytes, all
@@ -1624,6 +1682,7 @@ export async function desktopCommand(opts: DesktopOptions): Promise<void> {
       abortTurn(tab);
       cancelPendingGates(tab);
       tab.currentSession = mintSessionFor(tab.rootDir);
+      persistOpenTabs();
       if (tab.runtime) tab.runtime = buildRuntimeFor(tab);
       emitSessions(tab);
       return;

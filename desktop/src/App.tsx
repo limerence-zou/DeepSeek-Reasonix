@@ -62,7 +62,6 @@ import {
 import { WorkdirPop } from "./ui/workdir-pop";
 import { useAutoScroll } from "./ui/useAutoScroll";
 import { useDisableTextAssist } from "./ui/useDisableTextAssist";
-import { useWindowBounds } from "./ui/useWindowBounds";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 export type AssistantSegment =
@@ -1339,11 +1338,46 @@ function TabRuntime({
     [sendRpc],
   );
 
+  // Read the latest session inside the stable restore callback below.
+  const currentSessionRef = useRef(state.currentSession);
+  currentSessionRef.current = state.currentSession;
+  const restoreScrollTop = useCallback(() => {
+    const session = currentSessionRef.current;
+    if (!session) return null;
+    const raw = localStorage.getItem(`reasonix.scroll.${session}`);
+    const n = raw ? Number(raw) : Number.NaN;
+    return Number.isFinite(n) ? n : null;
+  }, []);
+
   const { showJumpButton, scrollToBottom } = useAutoScroll(
     threadRef,
     threadInnerRef,
     state.busy,
+    restoreScrollTop,
   );
+
+  // Persist the transcript scroll offset per session so a restart reopens
+  // the conversation where the user left it (#1244).
+  useEffect(() => {
+    const el = threadRef.current;
+    const session = state.currentSession;
+    if (!el || !session) return;
+    const key = `reasonix.scroll.${session}`;
+    let timer: ReturnType<typeof setTimeout>;
+    const onScroll = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+        if (atBottom) localStorage.removeItem(key);
+        else localStorage.setItem(key, String(Math.round(el.scrollTop)));
+      }, 250);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      clearTimeout(timer);
+    };
+  }, [state.currentSession]);
 
   useEffect(() => {
     if (!active) return;
@@ -2613,13 +2647,25 @@ export function App() {
     const v = localStorage.getItem("reasonix.fontFamily");
     return isFontFamily(v) ? v : FONT_FAMILY.SANS;
   });
-  const [sideCollapsed, setSideCollapsed] = useState(false);
-  const [ctxCollapsed, setCtxCollapsed] = useState(false);
+  const [sideCollapsed, setSideCollapsed] = useState(
+    () => localStorage.getItem("reasonix.sideCollapsed") === "1",
+  );
+  const [ctxCollapsed, setCtxCollapsed] = useState(
+    () => localStorage.getItem("reasonix.ctxCollapsed") === "1",
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("reasonix.theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("reasonix.sideCollapsed", sideCollapsed ? "1" : "0");
+  }, [sideCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("reasonix.ctxCollapsed", ctxCollapsed ? "1" : "0");
+  }, [ctxCollapsed]);
 
   useEffect(() => {
     // Chromium webview supports `zoom`; scales every px-based size without touching CSS rules.
@@ -2641,8 +2687,6 @@ export function App() {
     window.addEventListener("reasonix:currency", onCur);
     return () => window.removeEventListener("reasonix:currency", onCur);
   }, []);
-
-  useWindowBounds();
 
   const deliverToTab = useCallback((tabId: string, action: TabAction) => {
     const dispatch = dispatchersRef.current.get(tabId);
@@ -2733,7 +2777,10 @@ export function App() {
                   ? prev
                   : [...prev, { id: tabId, workspaceDir: ev.workspaceDir }],
               );
-              setActiveTabId(tabId);
+              // Focus the tab the backend marked active (user-opened, or the
+              // restored focused tab); otherwise keep focus, but make sure
+              // *some* tab is active during a multi-tab restore.
+              setActiveTabId((prev) => (ev.active || !prev ? tabId : prev));
               return;
             }
             if (ev.type === "$tab_closed" && tabId) {
@@ -2827,6 +2874,14 @@ export function App() {
       for (const c of cleanups) c();
     };
   }, [deliverToTab]);
+
+  // Tell the backend which tab is focused so a restart can reopen on it (#1244).
+  useEffect(() => {
+    if (!activeTabId) return;
+    invoke("rpc_send", {
+      line: JSON.stringify({ cmd: "tab_activate", tabId: activeTabId }),
+    }).catch(() => {});
+  }, [activeTabId]);
 
   const openTab = useCallback(() => {
     invoke("rpc_send", { line: JSON.stringify({ cmd: "tab_open" }) }).catch((err) =>

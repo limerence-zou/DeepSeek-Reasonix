@@ -123,8 +123,8 @@ export interface ReasonixConfig {
   workspaceDir?: string;
   /** Last N workspace paths the desktop client has opened, most recent first. */
   recentWorkspaces?: string[];
-  /** Desktop only — workspace dir per open tab in tab order, persisted so restart restores every tab (issue #933). Empty/absent → boot with a single default tab. */
-  desktopOpenTabs?: string[];
+  /** Desktop only — open tabs in tab order, each with its workspace dir, loaded session and focus, persisted so restart restores every tab and its conversation (issues #933, #1244). Empty/absent → boot with a single default tab. */
+  desktopOpenTabs?: DesktopOpenTab[];
   /** Desktop only — `openWith` value for clicking file links. Empty/undefined = OS default app. Examples: "code", "cursor", "C:\\path\\to\\editor.exe". */
   editor?: string;
   theme?: ThemeName | "auto";
@@ -875,21 +875,50 @@ export function pushRecentWorkspace(dir: string, path: string = defaultConfigPat
   writeConfig(cfg, path);
 }
 
-export function loadDesktopOpenTabs(path: string = defaultConfigPath()): string[] {
-  const v = readConfig(path).desktopOpenTabs;
-  return Array.isArray(v)
-    ? v.filter((s): s is string => typeof s === "string" && s.length > 0)
-    : [];
+/** Desktop only — one open tab's restorable state. */
+export interface DesktopOpenTab {
+  dir: string;
+  /** Session the tab had loaded; reopened on boot if its jsonl still exists. */
+  session?: string;
+  /** Whether this was the focused tab. */
+  active?: boolean;
 }
 
-export function saveDesktopOpenTabs(dirs: string[], path: string = defaultConfigPath()): void {
-  const cfg = readConfig(path);
-  const cleaned = dirs.filter((s): s is string => typeof s === "string" && s.length > 0);
-  if (cleaned.length === 0) {
-    cfg.desktopOpenTabs = undefined;
-  } else {
-    cfg.desktopOpenTabs = cleaned;
+export function loadDesktopOpenTabs(path: string = defaultConfigPath()): DesktopOpenTab[] {
+  const v: unknown = readConfig(path).desktopOpenTabs;
+  if (!Array.isArray(v)) return [];
+  const out: DesktopOpenTab[] = [];
+  for (const entry of v) {
+    // Legacy format (issue #933) persisted bare workspace-dir strings.
+    if (typeof entry === "string") {
+      if (entry) out.push({ dir: entry });
+    } else if (
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as DesktopOpenTab).dir === "string" &&
+      (entry as DesktopOpenTab).dir.length > 0
+    ) {
+      const e = entry as DesktopOpenTab;
+      out.push({ dir: e.dir, session: e.session, active: e.active });
+    }
   }
+  return out;
+}
+
+export function saveDesktopOpenTabs(
+  tabs: DesktopOpenTab[],
+  path: string = defaultConfigPath(),
+): void {
+  const cfg = readConfig(path);
+  const cleaned = tabs
+    .filter((t) => t && typeof t.dir === "string" && t.dir.length > 0)
+    .map((t) => {
+      const e: DesktopOpenTab = { dir: t.dir };
+      if (t.session) e.session = t.session;
+      if (t.active) e.active = true;
+      return e;
+    });
+  cfg.desktopOpenTabs = cleaned.length === 0 ? undefined : cleaned;
   writeConfig(cfg, path);
 }
 

@@ -15,6 +15,8 @@ export function useAutoScroll(
   containerRef: React.RefObject<HTMLDivElement | null>,
   contentRef: React.RefObject<HTMLDivElement | null>,
   busy: boolean,
+  /** Optional boot-time restore: the offset the transcript should open at. */
+  getRestoreScrollTop?: () => number | null,
 ) {
   const [showJumpButton, setShowJumpButton] = useState(false);
   const isPinnedRef = useRef(true);
@@ -123,17 +125,27 @@ export function useAutoScroll(
     };
   }, [containerRef, contentRef, refreshJumpButton]);
 
-  // Initial scroll to bottom when hook mounts (e.g., session loaded).
+  // Initial scroll when the hook mounts (e.g. session loaded). Restores the
+  // saved offset if there is one (#1244), otherwise pins to the bottom.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const id = setTimeout(() => {
-      isPinnedRef.current = true;
-      setShowJumpButton(false);
-      el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
-    }, 50);
+      const restore = getRestoreScrollTop?.() ?? null;
+      if (restore != null && restore > PIN_THRESHOLD) {
+        // Mid-transcript restore: stay un-pinned so content growth and the
+        // ResizeObserver don't yank the view back to the bottom.
+        isPinnedRef.current = false;
+        el.scrollTop = restore;
+        refreshJumpButton();
+      } else {
+        isPinnedRef.current = true;
+        setShowJumpButton(false);
+        el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+      }
+    }, 60);
     return () => clearTimeout(id);
-  }, [containerRef]);
+  }, [containerRef, getRestoreScrollTop, refreshJumpButton]);
 
   return { showJumpButton, scrollToBottom };
 }
