@@ -191,6 +191,8 @@ export interface ReasonixConfig {
   skills?: {
     paths?: string[];
   };
+  /** Enable the `java_source` tool for finding and decompiling Java class source. Default off. */
+  javaSource?: boolean;
   /** User-declared extensions to the built-in memory types (#709). Unknown types round-trip even without a declaration; declaring one lets you attach a default priority + lifecycle. */
   memory?: {
     customTypes?: CustomMemoryTypeConfig[];
@@ -636,6 +638,13 @@ export function searchEnabled(path: string = defaultConfigPath()): boolean {
   const cfg = readConfig(path).search;
   if (cfg === false) return false;
   return true;
+}
+
+export function loadJavaSourceEnabled(path: string = defaultConfigPath()): boolean {
+  const env = process.env.REASONIX_JAVA_SOURCE;
+  if (env === "1" || env === "true") return true;
+  const cfg = readConfig(path).javaSource;
+  return cfg === true;
 }
 
 export function webSearchEngine(

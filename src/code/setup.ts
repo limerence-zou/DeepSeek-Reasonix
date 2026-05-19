@@ -3,6 +3,7 @@ import {
   loadBaseUrl,
   loadEditMode,
   loadFilesystemOutlineThresholdBytes,
+  loadJavaSourceEnabled,
   loadProjectShellAllowed,
   loadResolvedSkillPaths,
   readConfig,
@@ -12,6 +13,7 @@ import { bootstrapSemanticSearchInCodeMode } from "../index/semantic/tool.js";
 import { ToolRegistry } from "../tools.js";
 import { registerChoiceTool } from "../tools/choice.js";
 import { registerFilesystemTools } from "../tools/filesystem.js";
+import { registerJavaSourceTool } from "../tools/java-source.js";
 import { JobRegistry } from "../tools/jobs.js";
 import { registerMemoryTools } from "../tools/memory.js";
 import { registerPlanTool } from "../tools/plan.js";
@@ -70,6 +72,9 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
   registerScaffoldTools(tools, { projectRoot: opts.rootDir });
   if (searchEnabled()) {
     registerWebTools(tools);
+  }
+  if (loadJavaSourceEnabled()) {
+    registerJavaSourceTool(tools, { projectRoot: opts.rootDir });
   }
   // Lazy: constructing DeepSeekClient throws when DEEPSEEK_API_KEY is unset,
   // which would kill `reasonix code` before the setup wizard can prompt for
