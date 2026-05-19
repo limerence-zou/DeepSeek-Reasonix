@@ -3,6 +3,47 @@
 All notable changes to Reasonix. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.1] — 2026-05-19
+
+**Desktop shakeout.** Follow-ups to the 0.47.0 desktop launch:
+inherit login-shell `PATH` so `nvm`/`asdf`/`fnm`-installed Node is
+visible to `run_command` (#1331); stop claiming "Connected" on the QQ
+settings page since the desktop is config-editor-only, not a live
+bridge (#1326); re-enable devtools + right-click context menu in
+release builds; route the in-app update check through the updater
+plugin so CSP doesn't block it (#1298); prevent the browser-level
+Select-All when the composer isn't focused (#1314); add unified
+`button:disabled` style; ship selectable theme styles (#1291); a few
+follow-up bug fixes from the release.
+
+**Prompt budget — round one.** `codeSystemPrompt` compressed -51%
+(~3.1k tokens/request, #1323) and tool spec descriptions -28% (~2.7k
+tokens/request, #1321), with a byte-budget regression test locked in
+(#1320). The cache-prefix shrinks accordingly — cheaper first turn,
+same behavior.
+
+**TUI / shell-exec.** Per-call shell-exec approval flow now surfaces
+on the first run instead of failing silently (#1278); spinner +
+stream tick rate dropped on legacy Windows conhost; light-theme
+picker rows highlight on selection (#1330); `//` line-comment input
+no longer parses as a slash command (#1288).
+
+**Other:**
+- `feat(core-utils)` new `@reasonix/core-utils` workspace package —
+  Phase 1 internal split, no public-API change (#1328)
+- `feat(lifecycle)` opt-in engineering lifecycle (#1306)
+- `feat(tools)` ordered interceptor chain (#1301)
+- `feat(plan)` persist step evidence metadata (#1302)
+- `feat(read_file)` lower outline threshold 512 KiB → 64 KiB (#1324)
+- `fix(multi_edit)` roll back files that may have been modified on
+  write failure (#1325)
+- `fix(permissions)` strip literal `*` from always-allow prefix in
+  Desktop/ACP (#1312)
+- `fix(client)` skip `extra_body` for Azure endpoints (#1316)
+- `fix(search)` honor `tavily` engine + read engine at call time
+- `fix(cli)` resolve heap reexec entrypoint (#1303)
+- `fix(docs)` point download mirrors at `desktop-v*` tag namespace
+
 ## [0.47.0] — 2026-05-18
 
 **Desktop matures.** The Tauri app picks up the polish it was missing —
