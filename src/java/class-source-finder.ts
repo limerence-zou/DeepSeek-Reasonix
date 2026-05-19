@@ -1,12 +1,12 @@
 // ClassSourceFinder — locate Java source by fully-qualified class name.
-// Two-step: (1) project .java walk, (2) .m2 jar scan + javap decompile.
+// Two-step: (1) project .java walk, (2) jar cache scan (Maven .m2, Gradle) + javap decompile.
 
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { listJarEntries, readJarEntry } from "./zip-reader.js";
+import { readJarEntry } from "./zip-reader.js";
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ export interface FindResultSuccess {
   source: string;
   // Where the source originated:
   //   "project" — .java file in the project tree.
-  //   "m2-jar"  — decompiled from .m2 jar.
+  //   "m2-jar"  — decompiled from a jar in Maven .m2 or Gradle cache.
   //   "jar"     — decompiled from user-specified jar path.
   method: "project" | "m2-jar" | "jar";
   /** Filesystem path to the {@code .java} file or the jar that was decompiled. */
@@ -40,16 +40,15 @@ export interface FindSourceOptions {
 export interface ClassSourceFinderOptions {
   /** Root of the Java project to scan for {@code .java} files. */
   projectRoot: string;
-  // Path to the local Maven repository. Defaults to ~/.m2/repository.
-  m2Repo?: string;
+  // One or more directories to scan for jars (Maven .m2, Gradle cache, etc.).
+  // When absent, auto-detects ~/.m2/repository/ and ~/.gradle/caches/ (whichever exist).
+  repoPaths?: string[];
   // Command or absolute path for javap. Defaults to "javap".
   javapCommand?: string;
-  // Maximum number of jar files to scan inside .m2 before giving up.
+  // Maximum number of jar files to scan before giving up.
   // Protects against huge repositories. Defaults to 2000.
   maxJarScan?: number;
-  /**
-   * Signal to abort mid-scan (e.g. user pressed Escape).
-   */
+  // Signal to abort mid-scan (e.g. user pressed Escape).
   signal?: AbortSignal;
 }
 
@@ -57,14 +56,23 @@ export interface ClassSourceFinderOptions {
 
 export class ClassSourceFinder {
   private projectRoot: string;
-  private m2Repo: string;
+  private repoPaths: string[];
   private javapCommand: string;
   private maxJarScan: number;
   private signal?: AbortSignal;
 
+  static defaultRepoPaths(): string[] {
+    const home = os.homedir();
+    const candidates = [path.join(home, ".m2", "repository"), path.join(home, ".gradle", "caches")];
+    return candidates.filter((p) => fs.existsSync(p));
+  }
+
   constructor(options: ClassSourceFinderOptions) {
     this.projectRoot = path.resolve(options.projectRoot);
-    this.m2Repo = path.resolve(options.m2Repo ?? path.join(os.homedir(), ".m2", "repository"));
+    this.repoPaths =
+      options.repoPaths && options.repoPaths.length > 0
+        ? options.repoPaths.map((p) => path.resolve(p))
+        : ClassSourceFinder.defaultRepoPaths();
     this.javapCommand = options.javapCommand ?? "javap";
     this.maxJarScan = options.maxJarScan ?? 2000;
     this.signal = options.signal;
@@ -74,7 +82,7 @@ export class ClassSourceFinder {
 
   // Find source for fullyQualifiedName.
   // 1. Walk the project tree for a matching .java file.
-  // 2. Fall back to scanning .m2 jars (optionally filtered by jarKeyword).
+  // 2. Fall back to scanning jar caches (Maven .m2, Gradle) (optionally filtered by jarKeyword).
   async findSource(fullyQualifiedName: string, options?: FindSourceOptions): Promise<FindResult> {
     this.throwIfAborted();
 
@@ -82,11 +90,11 @@ export class ClassSourceFinder {
     const projectResult = await this.searchProject(fullyQualifiedName);
     if (projectResult) return projectResult;
 
-    // 2. Maven local repository (optionally filtered by jarKeyword)
-    return this.searchM2Repository(fullyQualifiedName, options?.jarKeyword);
+    // 2. Jar cache repositories (optionally filtered by jarKeyword)
+    return this.searchRepositories(fullyQualifiedName, options?.jarKeyword);
   }
 
-  // Like findSource, but skip project + .m2 — directly read from jarPath.
+  // Like findSource, but skip project + repo scan — directly read from jarPath.
   // @param fullyQualifiedName e.g. "com.example.MyClass"
   // @param jarPath path to a specific .jar file
   async findSourceInJar(fullyQualifiedName: string, jarPath: string): Promise<FindResult> {
@@ -172,14 +180,16 @@ export class ClassSourceFinder {
     return null;
   }
 
-  // ── step 2: Maven local repository ──────────────────────────────────────
+  // ── step 2: jar cache repositories ─────────────────────────────────
 
-  private async searchM2Repository(fqn: string, jarKeyword?: string): Promise<FindResult> {
+  private async searchRepositories(fqn: string, jarKeyword?: string): Promise<FindResult> {
     const classEntry = `${fqn.replace(/\./g, "/")}.class`;
 
-    // Collect jar paths — filtered by keyword when provided.
+    // Collect jar paths across all repo dirs — filtered by keyword when provided.
     const jarPaths: string[] = [];
-    await this.walkM2ForJars(this.m2Repo, jarPaths, jarKeyword);
+    for (const repoDir of this.repoPaths) {
+      await this.walkForJars(repoDir, jarPaths, jarKeyword);
+    }
 
     let scanned = 0;
     for (const jarPath of jarPaths) {
@@ -190,7 +200,6 @@ export class ClassSourceFinder {
       try {
         const content = readJarEntry(jarPath, classEntry);
         if (content) {
-          // Found the class inside this jar — decompile it.
           const source = await this.decompileFromJar(jarPath, content.data, fqn);
           return { found: true, source, method: "m2-jar", sourcePath: jarPath };
         }
@@ -202,9 +211,19 @@ export class ClassSourceFinder {
     return { found: false, method: "not-found" };
   }
 
+  private static readonly MAX_WALK_DEPTH = 64;
+
   // Recursively walk dir collecting .jar file paths.
   // keyword: case-insensitive filter on jar filename/path.
-  private async walkM2ForJars(dir: string, out: string[], keyword?: string): Promise<void> {
+  // depth: guards against stack overflow on pathological directory structures.
+  private async walkForJars(
+    dir: string,
+    out: string[],
+    keyword?: string,
+    depth = 0,
+  ): Promise<void> {
+    if (depth >= ClassSourceFinder.MAX_WALK_DEPTH) return;
+
     let entries: fs.Dirent[];
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -218,9 +237,8 @@ export class ClassSourceFinder {
 
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await this.walkM2ForJars(fullPath, out, keyword);
+        await this.walkForJars(fullPath, out, keyword, depth + 1);
       } else if (entry.isFile() && entry.name.endsWith(".jar")) {
-        // Apply keyword filter at the leaf — only push matching jars.
         if (!keyword || fullPath.toLowerCase().includes(keyword.toLowerCase())) {
           out.push(fullPath);
         }

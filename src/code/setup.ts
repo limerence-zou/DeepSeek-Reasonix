@@ -2,6 +2,7 @@ import { DeepSeekClient } from "../client.js";
 import {
   loadBaseUrl,
   loadEditMode,
+  loadJavaSourceEnabled,
   loadProjectShellAllowed,
   loadResolvedSkillPaths,
   readConfig,
@@ -75,7 +76,9 @@ export async function buildCodeToolset(opts: CodeToolsetOpts): Promise<CodeTools
       webSearchEndpoint: webSearchEndpoint(),
     });
   }
-  registerJavaSourceTool(tools, { projectRoot: opts.rootDir });
+  if (loadJavaSourceEnabled()) {
+    registerJavaSourceTool(tools, { projectRoot: opts.rootDir });
+  }
   // Lazy: constructing DeepSeekClient throws when DEEPSEEK_API_KEY is unset,
   // which would kill `reasonix code` before the setup wizard can prompt for
   // one. Defer to first subagent dispatch — by then the user has either keyed

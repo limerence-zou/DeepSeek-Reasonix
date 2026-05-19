@@ -1,5 +1,6 @@
 // java_source tool — find and decompile Java source by fully-qualified class name.
-// Modes: (1) project .java walk, (2) .m2 jar scan, (3) direct jarPath.
+// Modes: (1) project .java walk, (2) Maven/Gradle jar cache scan, (3) direct jarPath.
+// Default-off: enabled via config.json `"javaSource": true` or env `REASONIX_JAVA_SOURCE=1`.
 
 import { ClassSourceFinder } from "../java/class-source-finder.js";
 import type { ToolRegistry } from "../tools.js";
@@ -50,7 +51,7 @@ export function registerJavaSourceTool(
         jarKeyword: {
           type: "string",
           description:
-            'Optional. Only search .m2 jars whose filename or path contains this keyword (case-insensitive). Dramatically narrows the scan when you know the library name, e.g. "spring-core", "guava", "mycompany-utils". Ignored when jarPath is also set.',
+            'Optional. Only search jars whose filename or path contains this keyword (case-insensitive). Dramatically narrows the scan when you know the library name, e.g. "spring-core", "guava", "mycompany-utils". Ignored when jarPath is also set.',
         },
       },
       required: ["className"],
@@ -81,7 +82,7 @@ export function registerJavaSourceTool(
       const jarKeyword = args?.jarKeyword?.trim();
 
       if (jarPath) {
-        // Mode: direct jar path — skip project + .m2
+        // Mode: direct jar path — skip project + repo scan
         const result = await finder.findSourceInJar(className, jarPath);
         if (!result.found) {
           return JSON.stringify({
@@ -99,18 +100,18 @@ export function registerJavaSourceTool(
         });
       }
 
-      // Default: project search → .m2 scan (optionally filtered by jarKeyword)
+      // Default: project search → jar cache scan (optionally filtered by jarKeyword)
       const result = await finder.findSource(className, {
         ...(jarKeyword ? { jarKeyword } : {}),
       });
 
       if (!result.found) {
         const keywordLine = jarKeyword
-          ? `  • ~/.m2/repository/ for jars containing keyword "${jarKeyword}"`
-          : "  • ~/.m2/repository/ for all jars";
+          ? `  • Maven .m2 / Gradle cache for jars containing keyword "${jarKeyword}"`
+          : "  • Maven .m2 / Gradle cache for all jars";
         const tip = jarKeyword
           ? "Try a different keyword, use `jarPath` with the exact path, or check if the class is in a different library."
-          : `Tip: pass \`jarKeyword\` (e.g. "spring-core", "guava") to narrow the .m2 scan, or \`jarPath\` with the exact jar path to skip the scan entirely.`;
+          : 'Tip: pass `jarKeyword` (e.g. "spring-core", "guava") to narrow the scan, or `jarPath` with the exact jar path to skip the scan entirely.';
         return JSON.stringify({
           status: "not-found",
           className,
