@@ -15,8 +15,8 @@ export function registerJavaSourceTool(
       "Find and return Java source code by fully-qualified class name.",
       "",
       "Three search modes (picked automatically based on which parameters are set):",
-      "1. **Default** (className only): walk project tree for a `.java` file, then fall back to scanning `~/.m2/repository` jars.",
-      "2. **With jarKeyword** (className + jarKeyword): same as default, but only scan jars whose path/name contains the keyword — much faster when you know the library.",
+      "1. **Default** (className + jarKeyword): walk project tree for a `.java` file, then scan `~/.m2/repository` jars whose path/name contains the keyword.",
+      "2. **Without keyword** (className only): same as default but scans ALL jars — much slower, use only when you don't know the library.",
       "3. **With jarPath** (className + jarPath): skip both project + .m2 scans, decompile directly from the specified jar file.",
       "",
       "Returns the source text (or decompiled bytecode) on success, or a clear 'not found' message.",
@@ -67,11 +67,11 @@ export function registerJavaSourceTool(
         );
       }
 
+      const jarKeyword = (args?.jarKeyword ?? "").trim();
+      const jarPath = args?.jarPath?.trim();
+
       const projectRoot = args?.projectRoot?.trim() || opts.projectRoot || process.cwd();
       const finder = new ClassSourceFinder({ projectRoot });
-
-      const jarPath = args?.jarPath?.trim();
-      const jarKeyword = args?.jarKeyword?.trim();
 
       if (jarPath) {
         const result = await finder.findSourceInJar(className, jarPath);
@@ -91,9 +91,7 @@ export function registerJavaSourceTool(
         });
       }
 
-      const result = await finder.findSource(className, {
-        ...(jarKeyword ? { jarKeyword } : {}),
-      });
+      const result = await finder.findSource(className, jarKeyword ? { jarKeyword } : undefined);
 
       if (!result.found) {
         const keywordLine = jarKeyword

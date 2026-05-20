@@ -205,10 +205,52 @@ export class ClassSourceFinder {
       const classFile = path.join(tmpDir, `${pkgPath}.class`);
       await fsp.writeFile(classFile, classBytes);
 
-      return await this.runJavap(fqn, tmpDir);
+      const raw = await this.runJavap(fqn, tmpDir);
+      return ClassSourceFinder.compressJavapOutput(raw);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  // Strip constant pool, debug tables (LineNumberTable / LocalVariableTable /
+  // StackMapTable), and "Compiled from …" from javap output — cuts ~60-80% of
+  // tokens for AI consumption while keeping method sigs + bytecode.
+  private static compressJavapOutput(raw: string): string {
+    const lines = raw.split("\n");
+    const out: string[] = [];
+    let skipUntilIndent: number | null = null;
+
+    for (const line of lines) {
+      // Constant pool entry lines — always indented `#N = ...`
+      if (/^\s+#\d+\s*=/.test(line)) continue;
+
+      // Inside a debug table body — skip lines indented deeper than the header
+      if (skipUntilIndent !== null) {
+        const m = line.match(/^(\s*)/);
+        const indent = m?.[1]?.length ?? 0;
+        if (indent > skipUntilIndent) continue;
+        skipUntilIndent = null;
+        // Also eat the blank line that often separates the table from the next section
+        if (line.trim() === "") continue;
+      }
+
+      // Debug table header — note its indent so we know when the body ends
+      const debugMatch = line.match(/^(\s+)(LineNumberTable|LocalVariableTable|StackMapTable):/);
+      if (debugMatch) {
+        skipUntilIndent = debugMatch[1]!.length;
+        continue;
+      }
+
+      // "Compiled from …" preamble
+      if (line.startsWith("Compiled from ")) continue;
+
+      out.push(line);
+    }
+
+    return out
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n") // collapse multiple blank lines
+      .trim();
   }
 
   private runJavap(className: string, classPath: string): Promise<string> {
@@ -217,7 +259,7 @@ export class ClassSourceFinder {
         this.javapCommand,
         ["-c", "-p", "-cp", classPath, className],
         {
-          maxBuffer: 10 * 1024 * 1024,
+          maxBuffer: 15 * 1024 * 1024,
           timeout: 30_000,
           signal: this.signal,
         },

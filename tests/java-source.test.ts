@@ -743,6 +743,7 @@ describe("registerJavaSourceTool", () => {
     expect(spec!.parameters).toBeDefined();
     expect(spec!.parameters!.properties).toHaveProperty("className");
     expect(spec!.parameters!.required).toContain("className");
+    expect(spec!.parameters!.required).not.toContain("jarKeyword");
   });
 
   it("validates className is required — returns error JSON", async () => {
@@ -759,7 +760,10 @@ describe("registerJavaSourceTool", () => {
     const reg = new ToolRegistry();
     registerJavaSourceTool(reg);
 
-    const result = await reg.dispatch("java_source", JSON.stringify({ className: "  " }));
+    const result = await reg.dispatch(
+      "java_source",
+      JSON.stringify({ className: "  ", jarKeyword: "test" }),
+    );
     const parsed = JSON.parse(result);
     expect(parsed).toHaveProperty("error");
     expect(parsed.error).toContain("className");
@@ -778,7 +782,10 @@ describe("registerJavaSourceTool", () => {
       "com.example Foo", // space
     ];
     for (const cls of invalid) {
-      const result = await reg.dispatch("java_source", JSON.stringify({ className: cls }));
+      const result = await reg.dispatch(
+        "java_source",
+        JSON.stringify({ className: cls, jarKeyword: "test" }),
+      );
       const parsed = JSON.parse(result);
       expect(parsed).toHaveProperty("error");
       expect(parsed.error).toContain("not a valid fully qualified Java class name");
@@ -801,7 +808,10 @@ describe("registerJavaSourceTool", () => {
       "a.b.C",
     ];
     for (const cls of valid) {
-      const result = await reg.dispatch("java_source", JSON.stringify({ className: cls }));
+      const result = await reg.dispatch(
+        "java_source",
+        JSON.stringify({ className: cls, jarKeyword: "test" }),
+      );
       const parsed = JSON.parse(result);
       // Should be a search result (not-found), not a validation error
       expect(parsed).not.toHaveProperty("error");
@@ -820,7 +830,7 @@ describe("registerJavaSourceTool", () => {
 
     const result = await reg.dispatch(
       "java_source",
-      JSON.stringify({ className: "com.test.Hello" }),
+      JSON.stringify({ className: "com.test.Hello", jarKeyword: "test" }),
     );
     const parsed = JSON.parse(result);
     expect(parsed.status).toBe("found");
@@ -829,7 +839,7 @@ describe("registerJavaSourceTool", () => {
     expect(parsed.sourcePath).toContain("Hello.java");
   });
 
-  it("mode 2: jarPath dispatch reads + decompiles", async () => {
+  it("mode 2: jarPath dispatch reads + decompiles (jarKeyword not required)", async () => {
     const root = await tmpDir();
     const jarPath = join(root, "lib.jar");
     // Need execFile to return javap output
@@ -855,6 +865,7 @@ describe("registerJavaSourceTool", () => {
     const reg = new ToolRegistry();
     registerJavaSourceTool(reg, { projectRoot: root });
 
+    // jarPath mode should work without jarKeyword
     const result = await reg.dispatch(
       "java_source",
       JSON.stringify({
@@ -868,7 +879,7 @@ describe("registerJavaSourceTool", () => {
     expect(parsed.source).toContain("public class Util");
   });
 
-  it("mode 3: jarKeyword dispatch accepts keyword without error", async () => {
+  it("jarKeyword dispatch accepts keyword without error", async () => {
     const root = await tmpDir();
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(join(root, "src", "main.ts"), "not java");
@@ -894,6 +905,26 @@ describe("registerJavaSourceTool", () => {
     expect(parsed.className).toBe("org.springframework.SomeClass");
   });
 
+  it("className-only dispatch (no jarKeyword, no jarPath) works", async () => {
+    const root = await tmpDir();
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "main.ts"), "not java");
+    vi.spyOn(ClassSourceFinder, "defaultRepoPaths").mockReturnValue([]);
+
+    const reg = new ToolRegistry();
+    registerJavaSourceTool(reg, { projectRoot: root });
+
+    const result = await reg.dispatch(
+      "java_source",
+      JSON.stringify({ className: "com.example.Missing" }),
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe("not-found");
+    expect(parsed.className).toBe("com.example.Missing");
+    // When jarKeyword is absent, the tip should suggest passing it
+    expect(parsed.message).toContain("Tip: pass `jarKeyword`");
+  });
+
   it("returns proper not-found response format", async () => {
     const root = await tmpDir();
     mkdirSync(join(root, "src"), { recursive: true });
@@ -906,7 +937,7 @@ describe("registerJavaSourceTool", () => {
 
     const result = await reg.dispatch(
       "java_source",
-      JSON.stringify({ className: "com.example.Nonexistent" }),
+      JSON.stringify({ className: "com.example.Nonexistent", jarKeyword: "test" }),
     );
     const parsed = JSON.parse(result);
     expect(parsed.status).toBe("not-found");
