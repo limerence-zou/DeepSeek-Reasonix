@@ -14,10 +14,9 @@ export function registerJavaSourceTool(
     description: [
       "Find and return Java source code by fully-qualified class name.",
       "",
-      "Three search modes (picked automatically based on which parameters are set):",
+      "Two search modes (picked automatically based on which parameters are set):",
       "1. **Default** (className + jarKeyword): walk project tree for a `.java` file, then scan `~/.m2/repository` jars whose path/name contains the keyword.",
-      "2. **Without keyword** (className only): same as default but scans ALL jars — much slower, use only when you don't know the library.",
-      "3. **With jarPath** (className + jarPath): skip both project + .m2 scans, decompile directly from the specified jar file.",
+      "2. **With jarPath** (className + jarPath): skip both project + .m2 scans, decompile directly from the specified jar file.",
       "",
       "Returns the source text (or decompiled bytecode) on success, or a clear 'not found' message.",
       "Only call this tool once per class name — it's I/O heavy.",
@@ -44,17 +43,17 @@ export function registerJavaSourceTool(
         jarKeyword: {
           type: "string",
           description:
-            'Optional. Only search jars whose filename or path contains this keyword (case-insensitive). Dramatically narrows the scan when you know the library name, e.g. "spring-core", "guava", "mycompany-utils". Ignored when jarPath is also set.',
+            'Only search jars whose filename or path contains this keyword (case-insensitive). Dramatically narrows the scan when you know the library name, e.g. "spring-core", "guava", "mycompany-utils". Ignored when jarPath is also set.',
         },
       },
-      required: ["className"],
+      required: ["className", "jarKeyword"],
     },
     parallelSafe: true,
     fn: async (args: {
       className: string;
       projectRoot?: string;
       jarPath?: string;
-      jarKeyword?: string;
+      jarKeyword: string;
     }) => {
       const className = (args?.className ?? "").trim();
       if (!className) {
@@ -67,7 +66,7 @@ export function registerJavaSourceTool(
         );
       }
 
-      const jarKeyword = (args?.jarKeyword ?? "").trim();
+      const jarKeyword = args.jarKeyword.trim();
       const jarPath = args?.jarPath?.trim();
 
       const projectRoot = args?.projectRoot?.trim() || opts.projectRoot || process.cwd();
@@ -94,12 +93,9 @@ export function registerJavaSourceTool(
       const result = await finder.findSource(className, jarKeyword ? { jarKeyword } : undefined);
 
       if (!result.found) {
-        const keywordLine = jarKeyword
-          ? `  • Maven .m2 / Gradle cache for jars containing keyword "${jarKeyword}"`
-          : "  • Maven .m2 / Gradle cache for all jars";
-        const tip = jarKeyword
-          ? "Try a different keyword, use `jarPath` with the exact path, or check if the class is in a different library."
-          : 'Tip: pass `jarKeyword` (e.g. "spring-core", "guava") to narrow the scan, or `jarPath` with the exact jar path to skip the scan entirely.';
+        const keywordLine = `  • Maven .m2 / Gradle cache for jars containing keyword "${jarKeyword}"`;
+        const tip =
+          "Try a different keyword, use `jarPath` with the exact path, or check if the class is in a different library.";
         return JSON.stringify({
           status: "not-found",
           className,
