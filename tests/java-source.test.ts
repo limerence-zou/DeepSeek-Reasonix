@@ -839,46 +839,6 @@ describe("registerJavaSourceTool", () => {
     expect(parsed.sourcePath).toContain("Hello.java");
   });
 
-  it("mode 2: jarPath dispatch reads + decompiles", async () => {
-    const root = await tmpDir();
-    const jarPath = join(root, "lib.jar");
-    // Need execFile to return javap output
-    vi.mocked(execFile).mockImplementation(((
-      _cmd: unknown,
-      _args: unknown,
-      _opts: unknown,
-      cb: unknown,
-    ) => {
-      if (typeof cb === "function") {
-        (cb as (err: Error | null, stdout: string, stderr: string) => void)(
-          null,
-          'Compiled from "Util.java"\npublic class Util { public Util(); }\n',
-          "",
-        );
-      }
-    }) as any);
-    writeFileSync(
-      jarPath,
-      createZip([{ name: "com/example/Util.class", data: Buffer.from("fake") }]),
-    );
-
-    const reg = new ToolRegistry();
-    registerJavaSourceTool(reg, { projectRoot: root });
-
-    const result = await reg.dispatch(
-      "java_source",
-      JSON.stringify({
-        className: "com.example.Util",
-        jarPath,
-        jarKeyword: "test",
-      }),
-    );
-    const parsed = JSON.parse(result);
-    expect(parsed.status).toBe("found");
-    expect(parsed.method).toBe("jar");
-    expect(parsed.source).toContain("public class Util");
-  });
-
   it("normal dispatch with jarKeyword returns not-found when no match", async () => {
     const root = await tmpDir();
     mkdirSync(join(root, "src"), { recursive: true });
@@ -921,6 +881,25 @@ describe("registerJavaSourceTool", () => {
     expect(parsed).toHaveProperty("error");
     expect(parsed.error).toContain("missing required parameter");
     expect(parsed.error).toContain("jarKeyword");
+  });
+
+  it("rejects dispatch when jarKeyword is empty or whitespace", async () => {
+    const root = await tmpDir();
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "main.ts"), "not java");
+
+    const reg = new ToolRegistry();
+    registerJavaSourceTool(reg, { projectRoot: root });
+
+    for (const kw of ["", "   ", "\t"]) {
+      const result = await reg.dispatch(
+        "java_source",
+        JSON.stringify({ className: "com.example.Foo", jarKeyword: kw }),
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed).toHaveProperty("error");
+      expect(parsed.error).toContain("must not be empty");
+    }
   });
 
   it("returns proper not-found response format", async () => {

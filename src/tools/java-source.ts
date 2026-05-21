@@ -14,9 +14,7 @@ export function registerJavaSourceTool(
     description: [
       "Find and return Java source code by fully-qualified class name.",
       "",
-      "Two search modes (picked automatically based on which parameters are set):",
-      "1. **Default** (className + jarKeyword): walk project tree for a `.java` file, then scan `~/.m2/repository` jars whose path/name contains the keyword.",
-      "2. **With jarPath** (className + jarPath): skip both project + .m2 scans, decompile directly from the specified jar file.",
+      "Search mode: walk the project tree for a `.java` file, then scan `~/.m2/repository` jars whose filename or path contains `jarKeyword`.",
       "",
       "Returns the source text (or decompiled bytecode) on success, or a clear 'not found' message.",
       "Only call this tool once per class name — it's I/O heavy.",
@@ -30,31 +28,16 @@ export function registerJavaSourceTool(
           description:
             'Fully qualified Java class name, e.g. "com.google.common.collect.Lists" or "org.springframework.web.servlet.DispatcherServlet".',
         },
-        projectRoot: {
-          type: "string",
-          description:
-            "Optional. Override the project root directory for phase-1 file search. Defaults to the current session's workspace root.",
-        },
-        jarPath: {
-          type: "string",
-          description:
-            'Optional. Exact path to a .jar file. When set, skips project file search and .m2 scan — reads the class directly from this jar and decompiles it. Useful when you know which dependency jar contains the class, e.g. "/home/user/.m2/repository/org/springframework/spring-core/6.1.0/spring-core-6.1.0.jar".',
-        },
         jarKeyword: {
           type: "string",
           description:
-            'Only search jars whose filename or path contains this keyword (case-insensitive). Dramatically narrows the scan when you know the library name, e.g. "spring-core", "guava", "mycompany-utils". Ignored when jarPath is also set.',
+            'Only search jars whose filename or path contains this keyword (case-insensitive). Keep it short — a narrow substring like "spring-core", "guava", or "mycompany-utils" scans faster and matches more precisely than a long fragment.',
         },
       },
       required: ["className", "jarKeyword"],
     },
     parallelSafe: true,
-    fn: async (args: {
-      className: string;
-      projectRoot?: string;
-      jarPath?: string;
-      jarKeyword: string;
-    }) => {
+    fn: async (args: { className: string; jarKeyword: string }) => {
       const className = (args?.className ?? "").trim();
       if (!className) {
         throw new Error("java_source: `className` is required");
@@ -67,35 +50,18 @@ export function registerJavaSourceTool(
       }
 
       const jarKeyword = args.jarKeyword.trim();
-      const jarPath = args?.jarPath?.trim();
-
-      const projectRoot = args?.projectRoot?.trim() || opts.projectRoot || process.cwd();
-      const finder = new ClassSourceFinder({ projectRoot });
-
-      if (jarPath) {
-        const result = await finder.findSourceInJar(className, jarPath);
-        if (!result.found) {
-          return JSON.stringify({
-            status: "not-found",
-            className,
-            message: `Class "${className}" not found in jar:\n  ${jarPath}\n\nMake sure the class name is correct and that the jar contains that entry.`,
-          });
-        }
-        return JSON.stringify({
-          status: "found",
-          className,
-          method: result.method,
-          sourcePath: result.sourcePath,
-          source: result.source,
-        });
+      if (!jarKeyword) {
+        throw new Error("java_source: `jarKeyword` must not be empty");
       }
 
-      const result = await finder.findSource(className, jarKeyword ? { jarKeyword } : undefined);
+      const projectRoot = opts.projectRoot || process.cwd();
+      const finder = new ClassSourceFinder({ projectRoot });
+
+      const result = await finder.findSource(className, { jarKeyword });
 
       if (!result.found) {
         const keywordLine = `  • Maven .m2 / Gradle cache for jars containing keyword "${jarKeyword}"`;
-        const tip =
-          "Try a different keyword, use `jarPath` with the exact path, or check if the class is in a different library.";
+        const tip = "Try a different keyword, or check if the class is in a different library.";
         return JSON.stringify({
           status: "not-found",
           className,

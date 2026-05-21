@@ -10,7 +10,7 @@ import { readJarEntry } from "./zip-reader.js";
 export interface FindResultSuccess {
   found: true;
   source: string;
-  method: "project" | "m2-jar" | "jar";
+  method: "project" | "m2-source-jar" | "m2-jar" | "jar";
   sourcePath: string;
 }
 
@@ -131,15 +131,36 @@ export class ClassSourceFinder {
   }
 
   private async searchRepositories(fqn: string, jarKeyword?: string): Promise<FindResult> {
+    const javaEntry = `${fqn.replace(/\./g, "/")}.java`;
     const classEntry = `${fqn.replace(/\./g, "/")}.class`;
 
-    const jarPaths: string[] = [];
+    const sourceJars: string[] = [];
+    const regularJars: string[] = [];
     for (const repoDir of this.repoPaths) {
-      await this.walkForJars(repoDir, jarPaths, jarKeyword);
+      await this.walkForJars(repoDir, sourceJars, regularJars, jarKeyword);
     }
 
+    // Pass 1: prefer source jars — read .java directly, no decompile.
+    for (const jarPath of sourceJars) {
+      this.throwIfAborted();
+      try {
+        const content = readJarEntry(jarPath, javaEntry);
+        if (content) {
+          return {
+            found: true,
+            source: content.data.toString("utf-8"),
+            method: "m2-source-jar",
+            sourcePath: jarPath,
+          };
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    // Pass 2: fall back to regular jars — decompile .class via javap.
     let scanned = 0;
-    for (const jarPath of jarPaths) {
+    for (const jarPath of regularJars) {
       this.throwIfAborted();
       if (scanned >= this.maxJarScan) break;
 
@@ -162,7 +183,8 @@ export class ClassSourceFinder {
 
   private async walkForJars(
     dir: string,
-    out: string[],
+    sourceJars: string[],
+    regularJars: string[],
     keyword?: string,
     depth = 0,
   ): Promise<void> {
@@ -177,14 +199,18 @@ export class ClassSourceFinder {
 
     for (const entry of entries) {
       this.throwIfAborted();
-      if (out.length >= this.maxJarScan) return;
+      if (sourceJars.length + regularJars.length >= this.maxJarScan) return;
 
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await this.walkForJars(fullPath, out, keyword, depth + 1);
+        await this.walkForJars(fullPath, sourceJars, regularJars, keyword, depth + 1);
       } else if (entry.isFile() && entry.name.endsWith(".jar")) {
         if (!keyword || fullPath.toLowerCase().includes(keyword.toLowerCase())) {
-          out.push(fullPath);
+          if (entry.name.endsWith("-sources.jar") || entry.name.includes("-sources-")) {
+            sourceJars.push(fullPath);
+          } else {
+            regularJars.push(fullPath);
+          }
         }
       }
     }
